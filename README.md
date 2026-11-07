@@ -11,7 +11,25 @@ Dsh 插件：在左侧栏增加一个「中转站」入口，主面板显示你�
 
 ## 一键安装（给使用者）
 
-**Windows**：下载仓库后双击 `install.cmd`，或者：
+**不用 clone，一行装（Windows PowerShell）：**
+
+```powershell
+$p = "$env:TEMP\dsh-relay-install.ps1"; irm -UseBasicParsing https://raw.githubusercontent.com/desstg/dsh-relay-usage/main/install.ps1 -OutFile $p; & $p
+```
+
+`raw.githubusercontent.com` 不通时加代理：
+
+```powershell
+$p = "$env:TEMP\dsh-relay-install.ps1"; irm -UseBasicParsing -Proxy http://192.168.31.9:7893 https://raw.githubusercontent.com/desstg/dsh-relay-usage/main/install.ps1 -OutFile $p; & $p -Proxy http://192.168.31.9:7893
+```
+
+**macOS / Linux：**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/desstg/dsh-relay-usage/main/install.sh | bash
+```
+
+**Windows（下载仓库后）：** 双击 `install.cmd`，或者：
 
 ```powershell
 .\install.ps1                      # 自动探测 profile，装最新版
