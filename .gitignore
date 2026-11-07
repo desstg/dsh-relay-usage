@@ -1,0 +1,9 @@
+node_modules/
+*.tgz
+*.log
+.DS_Store
+Thumbs.db
+*.bak
+*.bak-*
+client.js.bak*
+.test/.cache/

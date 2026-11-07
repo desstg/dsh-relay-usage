@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Syntax check
+        run: |
+          node --check index.js
+          node --check client.js
+          node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'));console.log('package.json ok')"
+          node -e "for (const f of ['locale/zh.json','locale/en.json']) JSON.parse(require('fs').readFileSync(f,'utf8'))"
+
+      - name: Offline harnesses
+        run: |
+          node .test/run.mjs
+          node .test/render.mjs
+          node .test/locale.mjs
+          node .test/migrate.mjs
+
+      - name: Pack
+        run: npm pack
+
+      - name: Publish artifacts to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tgz
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

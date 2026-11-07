@@ -1,0 +1,56 @@
+{
+  "name": "@desstg/dsh-relay-usage",
+  "version": "1.5.1",
+  "private": true,
+  "type": "module",
+  "description": "DSH plugin: a sidebar panel showing your own new-api / one-api relay station usage, plus the DeepSeek official balance.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "new-api",
+    "one-api",
+    "relay",
+    "usage",
+    "deepseek"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/desstg/dsh-relay-usage.git"
+  },
+  "homepage": "https://github.com/desstg/dsh-relay-usage#readme",
+  "bugs": {
+    "url": "https://github.com/desstg/dsh-relay-usage/issues"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "docs/*.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "pack:tgz": "npm pack"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  }
+}

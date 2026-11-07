@@ -1,0 +1,4 @@
+- insert:
+    - id: relay-usage
+      name: '@desstg/dsh-relay-usage'
+      config: {}
