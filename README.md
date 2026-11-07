@@ -9,9 +9,35 @@ Dsh 插件：在左侧栏增加一个「中转站」入口，主面板显示你�
 - 配色：只使用 `--dsw-alias-*` 主题令牌，深色 / 浅色自动跟随
 - 兼容：new-api / one-api 系（本机验证站点为 `v1.0.0-rc.48`）
 
-## 安装
+## 一键安装（给使用者）
 
-**从 GitHub 装（DSH 内执行）：**
+**Windows**：下载仓库后双击 `install.cmd`，或者：
+
+```powershell
+.\install.ps1                      # 自动探测 profile，装最新版
+.\install.ps1 -Proxy http://192.168.31.9:7893   # github.com 不通时走代理
+.\install.ps1 -Tgz .\desstg-dsh-relay-usage-1.6.0.tgz  # 离线包
+.\install.ps1 -Uninstall           # 卸载
+```
+
+**macOS / Linux**：
+
+```bash
+./install.sh
+./install.sh --proxy http://127.0.0.1:7890
+./install.sh --uninstall
+```
+
+脚本会自动：找到 DSH profile → 下载对应 release → 解到
+`%LOCALAPPDATA%\dsh-plugins`（Windows）或 `~/.local/share/dsh-plugins`（Unix）→
+在 profile 的 `node_modules` 建目录联接/符号链接 → 往 profile 的 `package.json`
+写入 `dependencies` 与 `dsh.profile.bundles`（改前备份）。**不需要 pnpm**。
+
+装完重启 DSH（或让插件管理器把 `relay-usage` 这行关掉再打开），左侧栏出现「中转站」。
+
+## 安装（DSH 内）
+
+**从 GitHub 装：**
 
 ```
 plugin_manager install_bundle  target = "github:desstg/dsh-relay-usage"
@@ -20,11 +46,12 @@ plugin_manager install_bundle  target = "github:desstg/dsh-relay-usage"
 或从 Release 里下载 `desstg-dsh-relay-usage-<version>.tgz`：
 
 ```
-plugin_manager install_bundle  target = "D:\\path\\to\\desstg-dsh-relay-usage-1.5.1.tgz"
+plugin_manager install_bundle  target = "D:\\path\\to\\desstg-dsh-relay-usage-1.6.0.tgz"
 ```
 
 `install_bundle` 报 `Cannot find module ...pnpm.mjs` 时（部分安装不带随附 pnpm），
-按 [docs/INSTALL.md](docs/INSTALL.md) 的「方式 B」手工建目录联接即可。
+用上面的「一键安装」脚本，或按 [docs/INSTALL.md](docs/INSTALL.md) 手工建联接。
+
 
 ## 功能
 

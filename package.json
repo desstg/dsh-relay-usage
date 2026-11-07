@@ -1,6 +1,6 @@
 {
   "name": "@desstg/dsh-relay-usage",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "private": true,
   "type": "module",
   "description": "DSH plugin: a sidebar panel showing your own new-api / one-api relay station usage, plus the DeepSeek official balance.",
@@ -37,13 +37,18 @@
     "icon.svg",
     "README.md",
     "docs/*.md",
-    "LICENSE"
+    "LICENSE",
+    "install.ps1",
+    "install.cmd",
+    "install.sh"
   ],
   "scripts": {
     "pack:tgz": "npm pack"
   },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
