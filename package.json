@@ -1,6 +1,6 @@
 {
   "name": "@desstg/dsh-relay-usage",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "type": "module",
   "description": "DSH plugin: a sidebar panel showing your own new-api / one-api relay station usage, plus the DeepSeek official balance.",

@@ -301,11 +301,11 @@ async function getSelf(session) {
   return { user: result.json.data ?? null }
 }
 
-async function getLogs(session, { startTimestamp, endTimestamp, maxPages = 8 }) {
+async function getLogs(session, { startTimestamp, endTimestamp, maxPages = 8, pageSize = 100 }) {
   const items = []
   let total
   for (let page = 0; page < maxPages; page += 1) {
-    const query = new URLSearchParams({ p: String(page), page_size: '100', type: '2' })
+    const query = new URLSearchParams({ p: String(page), page_size: String(pageSize), type: '2' })
     if (startTimestamp) query.set('start_timestamp', String(startTimestamp))
     if (endTimestamp) query.set('end_timestamp', String(endTimestamp))
 
@@ -321,10 +321,112 @@ async function getLogs(session, { startTimestamp, endTimestamp, maxPages = 8 }) 
     const list = Array.isArray(data) ? data : data && Array.isArray(data.items) ? data.items : []
     if (typeof data?.total === 'number') total = data.total
     items.push(...list)
-    if (list.length < 100) break
+    if (list.length < pageSize) break
     if (typeof total === 'number' && items.length >= total) break
   }
-  return items
+  // 同时返回总数：调用方按 total 决定要不要再切片，避免盲目翻页。
+  return { items, total: typeof total === 'number' ? total : items.length }
+}
+
+/**
+ * 按「天 × 时段」分段拉取日志。
+ *
+ * 背景（实测 hohai 站点）：
+ *   - `/api/log/self` 按 created_at **倒序**返回，`page_size` 上限 100；
+ *   - 响应里的 `total` 是该区间内的真实总数（实测单日 600~2200 条）；
+ *   - 只翻有限的页时，拿到的永远是区间内**最新**的那部分，早期记录全部丢失。
+ *
+ * 所以策略是：把每天再切成 hourChunk 小时的小段，逐段请求。单段记录数通常 < 100，
+ * 一次就能取全；即使某段仍超限，也只会丢这一小段的尾部，不会影响其他日期与时段。
+ *
+ * 每段独立 try/catch：单段失败不影响整体。
+ */
+// 替换 getLogsByDay：并发 + 自适应切片 + 内容去重
+async function getLogsByDay(session, { days = 21, concurrency = 10, pageSize = 100 } = {}) {
+  const now = Date.now()
+  const todayStart = startOfDay(now)
+  const all = []
+  const seen = new Set()
+
+  /** 有并发上限的任务池，避免一次性打爆站点。 */
+  async function pool(tasks, limit) {
+    const results = []
+    let cursor = 0
+    const workers = new Array(Math.min(limit, tasks.length || 1)).fill(0).map(async () => {
+      while (true) {
+        const index = cursor
+        cursor += 1
+        if (index >= tasks.length) return
+        results[index] = await tasks[index]()
+      }
+    })
+    await Promise.all(workers)
+    return results
+  }
+
+  /** 单个时间窗请求（一页即可，页大小自适应）。 */
+  async function fetchWindow(startMs, endMs) {
+    try {
+      const result = await getLogs(session, {
+        startTimestamp: Math.floor(startMs / 1000),
+        endTimestamp: Math.floor(endMs / 1000),
+        maxPages: 1,
+        pageSize,
+      })
+      return { items: result.items ?? [], total: result.total ?? 0 }
+    } catch {
+      return { items: [], total: 0 }
+    }
+  }
+
+  // 每天先取一页，读 total；total 超过一页时，按 total 把当天等分成若干窗口再并发取。
+  const dayTasks = []
+  for (let offset = 0; offset < days; offset += 1) {
+    const dayStart = todayStart - offset * DAY_MS
+    const dayEnd = dayStart + DAY_MS
+    dayTasks.push(async () => {
+      const first = await fetchWindow(dayStart, dayEnd)
+      const collected = [...first.items]
+      const total = first.total || first.items.length
+      const slices = Math.ceil(total / pageSize)
+      if (slices > 1) {
+        const span = DAY_MS / slices
+        const subTasks = []
+        for (let i = 0; i < slices; i += 1) {
+          const s = dayStart + i * span
+          const e = Math.min(s + span, dayEnd)
+          subTasks.push(async () => (await fetchWindow(s, e)).items)
+        }
+        const parts = await pool(subTasks, concurrency)
+        for (const part of parts) collected.push(...part)
+      }
+      return collected
+    })
+  }
+
+  const perDay = await pool(dayTasks, concurrency)
+
+  for (const items of perDay) {
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue
+      // 去重键：不能用 item.id —— new-api 返回的 id 是页内序号，跨页重复。
+      const id = [
+        item.created_at,
+        item.model_name,
+        item.quota,
+        item.prompt_tokens,
+        item.completion_tokens,
+        item.use_time,
+        item.token_name,
+        item.channel,
+      ].join('|')
+      if (seen.has(id)) continue
+      seen.add(id)
+      all.push(item)
+    }
+  }
+
+  return all
 }
 
 /* ------------------------------------------------------------------ *
@@ -758,15 +860,177 @@ function numberOrZero(value) {
   return Number.isFinite(number) ? number : 0
 }
 
-function summarizeLogs(items, quotaPerUnit) {
+/* ------------------------------------------------------------------ *
+ * 区间统计：今日 / 本周 / 上周 / 上上周 / 本月 / 上月 / 今年
+ *
+ * 参考「用量趋势」这类面板需要的不只是 7 天柱状图，还要能和上期对比（环比）。
+ * 这里把一次拉回来的原始日志按多个自然区间各算一遍，前端直接取用。
+ * 周起点按本地时区的周一 00:00（与站点「周一至周日」口径一致）。
+ * ------------------------------------------------------------------ */
+
+function startOfWeek(time) {
+  const d = new Date(time)
+  d.setHours(0, 0, 0, 0)
+  const weekday = (d.getDay() + 6) % 7 // 周一 = 0
+  return d.getTime() - weekday * DAY_MS
+}
+
+function startOfMonth(time) {
+  const d = new Date(time)
+  return new Date(d.getFullYear(), d.getMonth(), 1).getTime()
+}
+
+function startOfYear(time) {
+  const d = new Date(time)
+  return new Date(d.getFullYear(), 0, 1).getTime()
+}
+
+function emptyRange() {
+  return { quota: 0, requests: 0, tokens: 0 }
+}
+
+/** 环比：上期为 0 时返回 null（前端显示「—」），避免出现 Infinity%。 */
+function ratioOf(current, previous) {
+  if (!previous || !Number.isFinite(previous) || previous <= 0) return null
+  return (current - previous) / previous
+}
+
+function computeRanges(items, quotaPerUnit) {
   const now = Date.now()
+  const todayStart = startOfDay(now)
+  const tomorrowStart = todayStart + DAY_MS
+
+  const weekStart = startOfWeek(now)
+  const lastWeekStart = weekStart - 7 * DAY_MS
+  const prevWeekStart = weekStart - 14 * DAY_MS
+
+  const monthStart = startOfMonth(now)
+  const lastMonthStart = new Date(new Date(monthStart).getFullYear(), new Date(monthStart).getMonth() - 1, 1).getTime()
+  const yearStart = startOfYear(now)
+
+  const buckets = {
+    today: emptyRange(),
+    yesterday: emptyRange(),
+    week: emptyRange(),
+    lastWeek: emptyRange(),
+    prevWeek: emptyRange(),
+    month: emptyRange(),
+    lastMonth: emptyRange(),
+    year: emptyRange(),
+  }
+
+  const daily = new Map()
+
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const createdSeconds = numberOrZero(item.created_at)
+    if (!createdSeconds) continue
+    const createdMs = createdSeconds * 1000
+
+    const quota = numberOrZero(item.quota)
+    const tokens = numberOrZero(item.prompt_tokens) + numberOrZero(item.completion_tokens)
+
+    const add = (bucket) => {
+      bucket.quota += quota
+      bucket.requests += 1
+      bucket.tokens += tokens
+    }
+
+    if (createdMs >= todayStart && createdMs < tomorrowStart) add(buckets.today)
+    if (createdMs >= todayStart - DAY_MS && createdMs < todayStart) add(buckets.yesterday)
+    if (createdMs >= weekStart) add(buckets.week)
+    if (createdMs >= lastWeekStart && createdMs < weekStart) add(buckets.lastWeek)
+    if (createdMs >= prevWeekStart && createdMs < lastWeekStart) add(buckets.prevWeek)
+    if (createdMs >= monthStart) add(buckets.month)
+    if (createdMs >= lastMonthStart && createdMs < monthStart) add(buckets.lastMonth)
+    if (createdMs >= yearStart) add(buckets.year)
+
+    const key = dayKeyOf(new Date(createdMs))
+    const day = daily.get(key) ?? { date: key, quota: 0, requests: 0, tokens: 0 }
+    day.quota += quota
+    day.requests += 1
+    day.tokens += tokens
+    daily.set(key, day)
+  }
+
+  const convert = (quota) => (quotaPerUnit ? quota / quotaPerUnit : 0)
+  const withAmount = (bucket) => ({ ...bucket, amount: convert(bucket.quota) })
+
+  const today = withAmount(buckets.today)
+  const yesterday = withAmount(buckets.yesterday)
+  const week = withAmount(buckets.week)
+  const lastWeek = withAmount(buckets.lastWeek)
+  const prevWeek = withAmount(buckets.prevWeek)
+  const month = withAmount(buckets.month)
+  const lastMonth = withAmount(buckets.lastMonth)
+  const year = withAmount(buckets.year)
+
+  return {
+    ranges: {
+      today,
+      yesterday,
+      week,
+      lastWeek,
+      prevWeek,
+      month,
+      lastMonth,
+      year,
+      // 环比：上周 vs 上上周；本月 vs 上月；今日 vs 昨日
+      compare: {
+        todayVsYesterday: {
+          amount: ratioOf(today.amount, yesterday.amount),
+          tokens: ratioOf(today.tokens, yesterday.tokens),
+          requests: ratioOf(today.requests, yesterday.requests),
+        },
+        lastWeekVsPrevWeek: {
+          amount: ratioOf(lastWeek.amount, prevWeek.amount),
+          tokens: ratioOf(lastWeek.tokens, prevWeek.tokens),
+          requests: ratioOf(lastWeek.requests, prevWeek.requests),
+        },
+        monthVsLastMonth: {
+          amount: ratioOf(month.amount, lastMonth.amount),
+          tokens: ratioOf(month.tokens, lastMonth.tokens),
+          requests: ratioOf(month.requests, lastMonth.requests),
+        },
+      },
+      // 上周的日均（按 7 天算）
+      lastWeekDaily: {
+        amount: lastWeek.amount / 7,
+        tokens: lastWeek.tokens / 7,
+        requests: lastWeek.requests / 7,
+      },
+      // 有请求的天数（上周区间内）
+      lastWeekActiveDays: [...daily.keys()].filter((key) => {
+        const t = new Date(`${key}T00:00:00`).getTime()
+        return t >= lastWeekStart && t < weekStart && (daily.get(key)?.requests ?? 0) > 0
+      }).length,
+    },
+    daily: [...daily.values()]
+      .map((day) => ({ ...day, amount: convert(day.quota) }))
+      .sort((left, right) => (left.date < right.date ? -1 : 1)),
+    bounds: {
+      weekStart,
+      lastWeekStart,
+      prevWeekStart,
+      monthStart,
+      lastMonthStart,
+      yearStart,
+      todayStart,
+    },
+  }
+}
+
+function summarizeLogs(items, quotaPerUnit) {  const now = Date.now()
   const todayStart = startOfDay(now)
   const todayEnd = todayStart + DAY_MS
   const weekStart = todayStart - 6 * DAY_MS
 
   const dayBuckets = new Map()
-  for (let offset = 0; offset < 7; offset += 1) {
-    const date = new Date(todayStart + offset * DAY_MS)
+  // 从 6 天前建到今天（含今天），与 weekStart 对齐。
+  // 旧写法是 todayStart + offset * DAY_MS，建出的是「今天及未来 6 天」，
+  // 历史日志找不到对应桶会被整段丢弃，趋势图于是只显示今天一天。
+  for (let offset = 6; offset >= 0; offset -= 1) {
+    const date = new Date(todayStart - offset * DAY_MS)
     dayBuckets.set(dayKeyOf(date), {
       key: dayKeyOf(date),
       label: `${date.getMonth() + 1}/${date.getDate()}`,
@@ -1065,20 +1329,27 @@ async function buildOverview(session) {
 
   const user = self.user ?? {}
   const quotaPerUnit = session.meta.quotaPerUnit || 500000
-  const now = Date.now()
-  const todayStart = startOfDay(now)
-  const weekStart = todayStart - 6 * DAY_MS
 
-  const logs = await getLogs(session, {
-    startTimestamp: Math.floor(weekStart / 1000),
-    endTimestamp: Math.floor((todayStart + DAY_MS) / 1000),
-  })
-  const summary = summarizeLogs(logs, quotaPerUnit)
+  // 两段式加载：先拉最近 7 天立即出图，21 天数据放后台补齐。
+  // 打开面板时不再等 21 天（约 5.6s），首屏通常 1~2s。
+  // 与前端 5 分钟自动刷新对齐：期内重复打开直接复用，避免无意义的重复拉取。
+  const CACHE_TTL_MS = 5 * 60 * 1000
+  const force = Boolean(session.__forceRefresh)
+  if (!force && session.__cache && Date.now() - session.__cache.at < CACHE_TTL_MS) {
+    return session.__cache.value
+  }
+
+  const FAST_DAYS = 7
+  const FULL_DAYS = 21
+
+  const fastLogs = await getLogsByDay(session, { days: FAST_DAYS, concurrency: 10, pageSize: 100 })
+  const fastSummary = summarizeLogs(fastLogs, quotaPerUnit)
+  const fastRanges = computeRanges(fastLogs, quotaPerUnit)
 
   const quota = numberOrZero(user.quota)
   const usedQuota = numberOrZero(user.used_quota)
 
-  return {
+  const buildValue = (summary, ranges, complete) => ({
     station: { baseUrl: session.baseUrl, ...session.meta },
     account: {
       id: user.id,
@@ -1095,9 +1366,39 @@ async function buildOverview(session) {
       requestCount: numberOrZero(user.request_count),
     },
     ...summary,
+    ranges: ranges.ranges,
+    daily: ranges.daily,
+    // complete=false 表示目前只有最近 7 天，前端可据此提示「正在补全」
+    complete,
+    coveredDays: complete ? FULL_DAYS : FAST_DAYS,
     fetchedAt: Date.now(),
+  })
+
+  const fast = buildValue(fastSummary, fastRanges, false)
+  session.__cache = { at: Date.now(), value: fast }
+
+  // 后台补齐 21 天：不阻塞本次响应。同一会话并发多次打开时只跑一次。
+  if (!session.__filling) {
+    session.__filling = (async () => {
+      try {
+        const fullLogs = await getLogsByDay(session, { days: FULL_DAYS, concurrency: 10, pageSize: 100 })
+        const fullValue = buildValue(
+          summarizeLogs(fullLogs, quotaPerUnit),
+          computeRanges(fullLogs, quotaPerUnit),
+          true,
+        )
+        session.__cache = { at: Date.now(), value: fullValue }
+      } catch {
+        // 失败了就保持 7 天版本，前端下次刷新会再试
+      } finally {
+        session.__filling = null
+      }
+    })()
   }
+
+  return fast
 }
+
 
 /* ------------------------------------------------------------------ *
  * Route
@@ -1156,6 +1457,90 @@ export function apply(ctx) {
       return { ok: true, last: lastOfficialDebug }
     }
 
+    // ---------------------------------------------------------------
+    // 诊断用：逐日返回 /api/log/self 的原始响应特征。
+    // 只用于定位「趋势图只有一天」的问题，不参与正常渲染。
+    // 登录后调用 action=debug-logs 即可看到每天请求的真实结果。
+    // ---------------------------------------------------------------
+    if (action === 'debug-logs') {
+      const session = sessions.get(String(payload.sessionId ?? ''))
+      if (!session) return { ok: false, needsLogin: true, error: '会话已过期，请重新登录' }
+
+      const days = Number(payload.days) || 7
+      const pageSize = String(payload.pageSize ?? '100')
+      const type = payload.type === undefined ? '2' : String(payload.type)
+      const usePage = String(payload.p ?? '0')
+      const now = Date.now()
+      const todayStart = startOfDay(now)
+      const out = []
+
+      for (let offset = 0; offset < days; offset += 1) {
+        const dayStart = todayStart - offset * DAY_MS
+        const dayEnd = dayStart + DAY_MS
+        const query = new URLSearchParams({
+          p: usePage,
+          page_size: pageSize,
+          type,
+          start_timestamp: String(Math.floor(dayStart / 1000)),
+          end_timestamp: String(Math.floor(dayEnd / 1000)),
+        })
+
+        const row = {
+          date: new Date(dayStart).toISOString().slice(0, 10),
+          start: Math.floor(dayStart / 1000),
+          end: Math.floor(dayEnd / 1000),
+          requested: query.toString(),
+        }
+
+        try {
+          const result = await authedGet(session, `/api/log/self?${query.toString()}`)
+          const j = result.json
+          const data = j?.data
+          const list = Array.isArray(data) ? data : data && Array.isArray(data.items) ? data.items : []
+          row.httpOk = true
+          row.success = j?.success ?? null
+          row.message = j?.message ?? null
+          row.dataKind = Array.isArray(data) ? 'array' : data && typeof data === 'object' ? 'object' : typeof data
+          row.itemsLen = list.length
+          row.total = typeof data?.total === 'number' ? data.total : null
+          // 抽样第一条，看 created_at 单位与字段名
+          if (list[0]) {
+            const it = list[0]
+            row.sample = {
+              created_at: it.created_at,
+              created_at_type: typeof it.created_at,
+              created_at_as_date: (() => {
+                const v = Number(it.created_at)
+                if (!Number.isFinite(v) || !v) return null
+                // 猜单位：秒(10位) / 毫秒(13位)
+                const ms = String(Math.trunc(v)).length >= 12 ? v : v * 1000
+                return new Date(ms).toISOString()
+              })(),
+              quota: it.quota,
+              type: it.type,
+              model_name: it.model_name,
+            }
+          }
+          // 当天区间内实际命中几条（按 created_at 判断）
+          let inRange = 0
+          for (const it of list) {
+            const v = Number(it?.created_at)
+            if (!Number.isFinite(v) || !v) continue
+            const ms = String(Math.trunc(v)).length >= 12 ? v : v * 1000
+            if (ms >= dayStart && ms < dayEnd) inRange += 1
+          }
+          row.inRange = inRange
+        } catch (error) {
+          row.httpOk = false
+          row.error = String(error && error.message ? error.message : error).slice(0, 300)
+        }
+
+        out.push(row)
+      }
+
+      return { ok: true, baseUrl: session.baseUrl, days: out }
+    }
+
     if (action === 'connect') {
       pruneSessions(sessions)
       const connected = await connectStation(payload)
@@ -1195,12 +1580,18 @@ export function apply(ctx) {
       const session = sessions.get(String(payload.sessionId ?? ''))
       if (!session) return { ok: false, needsLogin: true, error: '会话已过期，请重新登录' }
       session.touchedAt = Date.now()
-      const overview = await buildOverview(session)
-      return { ok: true, overview }
+      // payload.refresh = true 时跳过缓存（对应界面上的「刷新」按钮）
+      session.__forceRefresh = Boolean(payload.refresh)
+      try {
+        const overview = await buildOverview(session)
+        return { ok: true, overview }
+      } finally {
+        session.__forceRefresh = false
+      }
     }
 
     if (action === 'ping') {
-      return { ok: true, version: '1.5.1' }
+      return { ok: true, version: '1.7.0' }
     }
 
     if (action === 'logout') {

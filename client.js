@@ -28,7 +28,8 @@ window.__ModuleLoader__.load({
       sessions: 'dsh.relay-usage.sessions.v1',
     }
     const DEFAULT_BASE = 'https://api.hohai.eu.org'
-    const REFRESH_MS = 60 * 1000
+    // 自动刷新间隔：用量数据变化慢，1 分钟一次既费流量又打断阅读，改 5 分钟。
+    const REFRESH_MS = 5 * 60 * 1000
 
     const DICT = {
       zh: {
@@ -52,10 +53,25 @@ window.__ModuleLoader__.load({
         signOut: '退出',
         balance: '余额',
         usedAmount: '累计已用',
-        todayAmount: '今日消耗',
+        todayAmount: '今日真实扣费',
         todayRequests: '今日请求',
         todayTokens: '今日 Token',
         totalRequests: '累计请求',
+        stationCard: '中转站',
+        lastWeekTitle: '上周用量',
+        realCost: '真实扣费',
+        tokenUsage: 'token 用量',
+        timesRequests: '次请求',
+        dailyAvg: '日均扣费',
+        daily: '日均',
+        activeDays: '天有请求',
+        vsPrev: '环比',
+        vsPrevMonth: '较上月',
+        monthYearTitle: '本月 / 今年',
+        monthCost: '本月扣费',
+        monthTokens: '本月 token',
+        yearCost: '今年扣费',
+        yearRequests: '今年请求',
         weekTitle: '近 7 日',
         modelsTitle: '模型用量',
         logsTitle: '最近消费',
@@ -94,12 +110,13 @@ window.__ModuleLoader__.load({
         trendTitle: '用量趋势',
         rangeWeek: '近 7 日',
         rangeMonth: '本月',
+        partial: '正在补全 21 天数据…',
         rangeToday: '今日',
         labelPerMillion: '每百万 Token 均价',
-        metricAmount: '金额',
+        metricAmount: '全额',
         metricToken: 'Token',
         labelTokens: 'Token 用量',
-        labelCost: '费用',
+        labelCost: '账单扣费',
         labelRequests: '请求',
         labelPerDay: '日均',
         noteTitle: '说明',
@@ -126,6 +143,22 @@ window.__ModuleLoader__.load({
         signOut: 'Sign out',
         balance: 'Balance',
         usedAmount: 'Used so far',
+        todayAmount: 'Charged today',
+        stationCard: 'Station',
+        lastWeekTitle: 'Last week',
+        realCost: 'Charged',
+        tokenUsage: 'Tokens',
+        timesRequests: 'Requests',
+        dailyAvg: 'Daily average',
+        daily: 'avg',
+        activeDays: 'active days',
+        vsPrev: 'vs prev',
+        vsPrevMonth: 'vs last month',
+        monthYearTitle: 'This month / year',
+        monthCost: 'This month',
+        monthTokens: 'Month tokens',
+        yearCost: 'This year',
+        yearRequests: 'Year requests',
         todayAmount: 'Spent today',
         todayRequests: 'Requests today',
         todayTokens: 'Tokens today',
@@ -168,6 +201,7 @@ window.__ModuleLoader__.load({
         trendTitle: 'Usage trend',
         rangeWeek: 'Last 7 days',
         rangeMonth: 'This month',
+        partial: 'Filling 21 days…',
         rangeToday: 'Today',
         labelPerMillion: 'Avg per 1M tokens',
         metricAmount: 'Cost',
@@ -263,8 +297,28 @@ window.__ModuleLoader__.load({
 
     /* ---------------------------- formatting --------------------------- */
 
-    function fmtAmount(value, symbol) {
-      const number = Number(value) || 0
+    /** 环比：null/非有限值显示「—」，正负带箭头。 */
+    function fmtRatio(ratio) {
+      if (ratio === null || ratio === undefined || !Number.isFinite(ratio)) return '—'
+      const pct = ratio * 100
+      if (Math.abs(pct) < 0.05) return '0.0%'
+      const sign = pct > 0 ? '▲ +' : '▼ '
+      return `${sign}${Math.abs(pct) >= 1000 ? pct.toFixed(0) : pct.toFixed(1)}%`
+    }
+
+    /** 区间起止（本地日期，如 10/26 至 11/01）。 */
+    function fmtRange(startMs, endMs) {
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return undefined
+      const f = (ms) => {
+        const d = new Date(ms)
+        return `${d.getMonth() + 1}/${String(d.getDate()).padStart(2, '0')}`
+      }
+      // 区间右端是「下一天 00:00」，显示时回退一天更符合直觉
+      const end = new Date(endMs - 1)
+      return `${f(startMs)} 至 ${f(end.getTime())}`
+    }
+
+    function fmtAmount(value, symbol) {      const number = Number(value) || 0
       const fixed = Math.abs(number) >= 10000 ? number.toFixed(0) : number.toFixed(2)
       const [whole, decimals] = fixed.split('.')
       const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
@@ -324,7 +378,7 @@ window.__ModuleLoader__.load({
 .rgu-dot[data-state="ready"] { background: var(--dsw-alias-state-success-primary); }
 .rgu-dot[data-state="error"] { background: var(--dsw-alias-state-error-primary); }
 .rgu-dot[data-state="busy"] { background: var(--dsw-alias-state-warn-primary); }
-.rgu-name { font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+.rgu-name { font-size: 14px; font-weight: 600; letter-spacing: .2px; }
 .rgu-sub { font-size: 11px; color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rgu-tools { display: flex; align-items: center; gap: 6px; }
 .rgu-btn { appearance: none; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); border-radius: 8px; padding: 5px 11px; font-size: 12px; line-height: 18px; cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s; }
@@ -341,7 +395,7 @@ window.__ModuleLoader__.load({
 .rgu-scard { position: relative; overflow: hidden; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; padding: 13px 15px; display: flex; flex-direction: column; gap: 5px; min-width: 0; transition: border-color .15s; }
 .rgu-scard:hover { border-color: color-mix(in srgb, var(--dsw-alias-brand-primary) 30%, var(--dsw-alias-border-l1)); }
 .rgu-scard-label { font-size: 11px; color: var(--dsw-alias-label-secondary); }
-.rgu-scard-value { font-size: 25px; font-weight: 600; line-height: 1.15; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
+.rgu-scard-value { font-size: 17px; font-weight: 600; line-height: 1.15; letter-spacing: .2px; font-variant-numeric: tabular-nums; }
 .rgu-scard-value[data-accent="brand"] { color: var(--dsw-alias-brand-primary); }
 .rgu-scard-hint { font-size: 11px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rgu-section { background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 12px; padding: 12px 15px; display: flex; flex-direction: column; gap: 11px; min-width: 0; }
@@ -354,7 +408,7 @@ window.__ModuleLoader__.load({
 .rgu-tab[data-active="true"] { background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); box-shadow: 0 0 0 1px var(--dsw-alias-border-l1); }
 .rgu-trend { display: flex; align-items: baseline; gap: 22px; flex-wrap: wrap; }
 .rgu-tnum { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.rgu-tnum-value { font-size: 19px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .2px; }
+.rgu-tnum-value { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .2px; }
 .rgu-tnum-label { font-size: 10px; color: var(--dsw-alias-label-secondary); }
 .rgu-split { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 10px; }
 @media (max-width: 900px) { .rgu-split { grid-template-columns: minmax(0, 1fr); } }
@@ -395,7 +449,7 @@ window.__ModuleLoader__.load({
 .rgu-bars[data-single="true"] .rgu-bar-col { max-width: 96px; }
 .rgu-metric { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: var(--dsw-alias-bg-layer-2); align-self: center; }
 .rgu-axis { font-size: 10px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
-.rgu-tnum-value { font-size: 25px; }.rgu-raw { margin: 6px 0 0; font-size: 10px; line-height: 15px; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; color: var(--dsw-alias-label-secondary); }
+.rgu-tnum-value { font-size: 17px; }.rgu-raw { margin: 6px 0 0; font-size: 10px; line-height: 15px; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; color: var(--dsw-alias-label-secondary); }
 .rgu-auth { display: flex; align-items: center; justify-content: center; min-height: 100%; padding: 30px 20px; }
 .rgu-auth-card { width: 100%; max-width: 404px; background: var(--dsw-alias-bg-layer-1); border: 1px solid var(--dsw-alias-border-l1); border-radius: 16px; padding: 22px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 10px 30px color-mix(in srgb, var(--dsw-alias-label-primary) 8%, transparent); }
 .rgu-auth-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
@@ -699,9 +753,10 @@ window.__ModuleLoader__.load({
       const [range, setRange] = useState('week')
       const [metric, setMetric] = useState('amount')
       const all = Array.isArray(days) ? days : []
-      const canMonth = all.length > 7
-      const active = range === 'month' && canMonth ? 'month' : range
-      const slice = active === 'today' ? all.slice(-1) : active === 'month' ? all : all.slice(-7)
+      const canMonth = all.length > 14
+      const active = range === 'month' && !canMonth ? 'week' : range
+      const slice =
+        active === 'today' ? all.slice(-1) : active === 'month' ? all.slice(-30) : all.slice(-7)
       const total = (key) =>
         slice.reduce(
           (sum, day) => sum + (Number(day[key] ?? (key === 'tokens' ? day.quota : 0)) || 0),
@@ -777,11 +832,63 @@ window.__ModuleLoader__.load({
             h(StatCard, { key: 'r', label: t('monthRequests'), value: wallet.monthlyRequests === undefined ? '—' : fmtInt(wallet.monthlyRequests), hint: `${t('todayRequests')} ${fmtInt(today.requests)}` }),
           ]
         : [
-            h(StatCard, { key: 'b', label: t('balance'), value: fmtAmount(wallet.balance, symbol), hint: `${t('quotaUnit')} ${fmtTokens(wallet.quota)}`, accent: 'brand' }),
-            h(StatCard, { key: 'u', label: t('usedAmount'), value: fmtAmount(wallet.usedAmount, symbol), hint: `${t('totalRequests')} ${fmtInt(wallet.requestCount)}` }),
-            h(StatCard, { key: 't', label: t('todayAmount'), value: fmtAmount(today.amount, symbol), hint: `${t('todayRequests')} ${fmtInt(today.requests)}` }),
-            h(StatCard, { key: 'k', label: t('todayTokens'), value: fmtTokens(today.tokens), hint: t('todayTitle') }),
+            h(StatCard, {
+              key: 'st',
+              label: t('stationCard'),
+              value: (overview.station && overview.station.name) || t('stationFallback'),
+              hint: hostOf(overview.station && overview.station.baseUrl),
+              accent: 'brand',
+            }),
+            h(StatCard, {
+              key: 'b',
+              label: t('balance'),
+              value: fmtAmount(wallet.balance, symbol),
+              hint: `${t('quotaUnit')} ${fmtTokens(wallet.quota)}`,
+            }),
+            h(StatCard, {
+              key: 'u',
+              label: t('usedAmount'),
+              value: fmtAmount(wallet.usedAmount, symbol),
+              hint: `${t('totalRequests')} ${fmtInt(wallet.requestCount)}`,
+            }),
+            h(StatCard, {
+              key: 't',
+              label: t('todayAmount'),
+              value: fmtAmount(today.amount, symbol),
+              hint: `${fmtTokens(today.tokens)} tokens · ${fmtInt(today.requests)} ${t('times')}`,
+            }),
           ]
+
+      // 上周用量面板（参考 richer 布局）：四项指标 + 环比
+      const r = overview.ranges || {}
+      const lastWeek = r.lastWeek || { amount: 0, tokens: 0, requests: 0 }
+      const cmp = (r.compare && r.compare.lastWeekVsPrevWeek) || {}
+      const dailyAvg = r.lastWeekDaily || { amount: 0, tokens: 0 }
+      const activeDays = typeof r.lastWeekActiveDays === 'number' ? r.lastWeekActiveDays : 0
+      const weekPanel = official
+        ? null
+        : h(Section, { title: t('lastWeekTitle'), hint: r.bounds ? fmtRange(r.bounds.lastWeekStart, r.bounds.weekStart) : undefined },
+            h('div', { className: 'rgu-cards' },
+              h(StatCard, { key: 'lw1', label: t('realCost'), value: fmtAmount(lastWeek.amount, symbol), hint: `${t('vsPrev')} ${fmtRatio(cmp.amount)}` }),
+              h(StatCard, { key: 'lw2', label: t('tokenUsage'), value: fmtTokens(lastWeek.tokens), hint: `${t('vsPrev')} ${fmtRatio(cmp.tokens)}` }),
+              h(StatCard, { key: 'lw3', label: t('timesRequests'), value: fmtInt(lastWeek.requests), hint: `${t('vsPrev')} ${fmtRatio(cmp.requests)}` }),
+              h(StatCard, { key: 'lw4', label: t('dailyAvg'), value: fmtAmount(dailyAvg.amount, symbol), hint: `${t('daily')} ${fmtTokens(dailyAvg.tokens)} token · ${t('activeDays')} ${activeDays}` }),
+            ),
+          )
+
+      // 本月 / 今年汇总（有数据才显示）
+      const month = r.month || null
+      const year = r.year || null
+      const monthPanel = official || !month
+        ? null
+        : h(Section, { title: t('monthYearTitle'), hint: r.bounds ? fmtRange(r.bounds.monthStart, Date.now()) : undefined },
+            h('div', { className: 'rgu-cards' },
+              h(StatCard, { key: 'mo1', label: t('monthCost'), value: fmtAmount(month.amount, symbol), hint: `${t('vsPrevMonth')} ${fmtRatio(r.compare && r.compare.monthVsLastMonth ? r.compare.monthVsLastMonth.amount : null)}` }),
+              h(StatCard, { key: 'mo2', label: t('monthTokens'), value: fmtTokens(month.tokens), hint: `${fmtInt(month.requests)} ${t('times')}` }),
+              h(StatCard, { key: 'yr1', label: t('yearCost'), value: year ? fmtAmount(year.amount, symbol) : '—', hint: year ? `${fmtTokens(year.tokens)} tokens` : undefined }),
+              h(StatCard, { key: 'yr2', label: t('yearRequests'), value: year ? fmtInt(year.requests) : '—', hint: year ? `${t('times')}` : undefined }),
+            ),
+          )
 
       const rightColumn = official
         ? h(Section, { title: t('noteTitle') },
@@ -819,7 +926,9 @@ window.__ModuleLoader__.load({
             )
           : null,
         h('div', { className: 'rgu-cards' }, ...cards),
-        h(TrendBlock, { days: week.days, symbol, t }),
+        weekPanel,
+        monthPanel,
+        h(TrendBlock, { days: (overview.daily && overview.daily.length ? overview.daily : week.days), symbol, t }),
         h('div', { className: 'rgu-split' },
           h(Section, {
             title: t('modelsTitle'),
@@ -827,6 +936,9 @@ window.__ModuleLoader__.load({
           }, h(ModelList, { models, symbol, t })),
           rightColumn,
         ),
+        overview.complete === false
+          ? h('div', { className: 'rgu-axis', style: { opacity: 0.7 } }, `${t('partial')} ${t('updated')} ${fmtClock(overview.fetchedAt || Date.now())}`)
+          : null,
         h('div', { className: 'rgu-foot' },
           h('span', null, `${t('updated')} ${fmtClock(overview.fetchedAt || Date.now())}`),
           h('span', null, t('autoRefresh')),
@@ -877,6 +989,9 @@ window.__ModuleLoader__.load({
       stationsRef.current = stations
       const sessionsRef = useRef(sessions)
       sessionsRef.current = sessions
+      // 供定时器读取最新选中的站点（避免闭包拿到旧的 activeId）
+      const activeIdRef = useRef(activeId)
+      activeIdRef.current = activeId
 
       const rememberSession = (stationId, sessionId) => {
         const next = { ...sessionsRef.current, [stationId]: sessionId }
@@ -938,16 +1053,30 @@ window.__ModuleLoader__.load({
         }
       }, [t])
 
-      const loadOverview = useCallback(async (stationId) => {
+      // 必须在 loadOverview 之前声明：后面会立刻写 loadOverviewRef.current，
+      // 放在后面会触发 TDZ（Cannot access before initialization）。
+      const pendingFillRef = useRef(null)
+      const loadOverviewRef = useRef(null)
+
+      const loadOverview = useCallback(async (stationId, force) => {
         const sessionId = sessionsRef.current[stationId]
         if (!sessionId) return false
         setStatus('refreshing')
         setError('')
         try {
-          const result = await callHost({ action: 'overview', sessionId })
+          const result = await callHost({ action: 'overview', sessionId, refresh: Boolean(force) })
           if (result.ok) {
             setOverview(result.overview)
             setStatus('ready')
+            // 服务端先给 7 天（complete=false），21 天在后台补齐；
+            // 延迟再取一次拿完整数据，只安排一次，避免连环请求。
+            if (result.overview && result.overview.complete === false) {
+              if (pendingFillRef.current) clearTimeout(pendingFillRef.current)
+              pendingFillRef.current = setTimeout(() => {
+                pendingFillRef.current = null
+                if (loadOverviewRef.current) loadOverviewRef.current(stationId, false)
+              }, 3000)
+            }
             return true
           }
           forgetSession(stationId)
@@ -962,6 +1091,7 @@ window.__ModuleLoader__.load({
           return false
         }
       }, [t])
+      loadOverviewRef.current = loadOverview
 
       const openStation = useCallback(async (station) => {
         if (!station) {
@@ -988,7 +1118,8 @@ window.__ModuleLoader__.load({
 
       const refresh = useCallback(async () => {
         const station = stationsRef.current.find((item) => item.id === activeId)
-        const loaded = await loadOverview(activeId)
+        // 手动刷新：绕过服务端 60 秒缓存
+        const loaded = await loadOverview(activeId, true)
         if (!loaded && station && (station.password || station.token)) await openStation(station)
       }, [activeId, loadOverview, openStation])
 
@@ -1089,7 +1220,8 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         const timer = window.setInterval(() => {
           if (typeof document !== 'undefined' && document.hidden) return
-          refreshRef.current()
+          // 自动刷新走缓存（force=false）：不强制重拉，命中服务端缓存或已补全的结果。
+          if (loadOverviewRef.current) loadOverviewRef.current(activeIdRef.current, false)
         }, REFRESH_MS)
         return () => window.clearInterval(timer)
       }, [])

@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/desstg/dsh-relay-usage/main/install
 ```powershell
 .\install.ps1                      # 自动探测 profile，装最新版
 .\install.ps1 -Proxy http://192.168.31.9:7893   # github.com 不通时走代理
-.\install.ps1 -Tgz .\desstg-dsh-relay-usage-1.6.0.tgz  # 离线包
+.\install.ps1 -Tgz .\desstg-dsh-relay-usage-1.7.0.tgz  # 离线包
 .\install.ps1 -Uninstall           # 卸载
 ```
 
@@ -64,7 +64,7 @@ plugin_manager install_bundle  target = "github:desstg/dsh-relay-usage"
 或从 Release 里下载 `desstg-dsh-relay-usage-<version>.tgz`：
 
 ```
-plugin_manager install_bundle  target = "D:\\path\\to\\desstg-dsh-relay-usage-1.6.0.tgz"
+plugin_manager install_bundle  target = "D:\\path\\to\\desstg-dsh-relay-usage-1.7.0.tgz"
 ```
 
 `install_bundle` 报 `Cannot find module ...pnpm.mjs` 时（部分安装不带随附 pnpm），
